@@ -1,7 +1,7 @@
 
-# mirage-starter
+# mirage-shell
 
-This is the minimal template for a Mirage unikernel.
+WIP: experimental shell built on top of Mirage.
 
 
 ## Prerequisites
