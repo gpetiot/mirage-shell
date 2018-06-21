@@ -8,18 +8,33 @@ let remove_cr str =
     String.sub str 0 ((String.length str) - 1)
   else str
 
+(* write a Cstruct.t to stdout (no CR) *)
+(* to define log_no_cr *)
+let write_one buf =
+  Lwt_cstruct.complete
+    (fun frag ->
+      let open Cstruct in
+      Lwt_bytes.write Lwt_unix.stdout frag.buffer frag.off frag.len
+    ) buf
+
+(* write a string to stdout (no CR) *)
+(* this could be in mirage_console *)
+let print str =
+  Lwt.return (Cstruct.create 32) >>= fun t ->
+  write_one (Cstruct.of_string str)
+      
 
 module Main
   (C: Mirage_types_lwt.CONSOLE)
   (*  (FS: Mirage_types_lwt.FS)*)
   (T: Mirage_types_lwt.TIME) =
 struct
-
+  
   let process_string_input console str =
      C.log console ("processing '" ^ str ^ "'...")
       
   let rec main_loop console =
-    C.log console ">" >>= fun () ->
+    print "> " >>= fun () ->
     let line = Lwt_main.run (C.read console) in
     match line with
     | Ok (`Data data) ->
@@ -28,7 +43,7 @@ struct
 	 main_loop console
        else
 	 if str = "exit" then
-	   C.log console "BYE"
+	   C.disconnect console
 	 else
 	   let last_char = String.get str ((String.length str) - 1) in
 	   if last_char = '&' then
