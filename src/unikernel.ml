@@ -20,7 +20,7 @@ let write_one buf =
 (* write a string to stdout (no CR) *)
 (* this could be in mirage_console *)
 let print str = write_one (Cstruct.of_string str)
-      
+
 
 module Main
   (C: Mirage_types_lwt.CONSOLE)
@@ -29,7 +29,18 @@ module Main
 struct
   
   let process_string_input console str =
-     C.log console ("processing '" ^ str ^ "'...")
+    let cmd = Command.parse str in
+    begin
+      match cmd with
+      | Ok cmd ->
+	 let str =
+	   Format.fprintf Format.str_formatter "%a" Command.pp_cmd cmd;
+	   Format.flush_str_formatter ()
+	 in
+	  C.log console str
+      | Error msg -> C.log console msg
+    end >>= fun () ->
+    C.log console ("processing '" ^ str ^ "'...")
       
   let rec main_loop console =
     print "> " >>= fun () ->
