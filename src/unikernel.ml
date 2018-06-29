@@ -19,9 +19,7 @@ let write_one buf =
 
 (* write a string to stdout (no CR) *)
 (* this could be in mirage_console *)
-let print str =
-  Lwt.return (Cstruct.create 32) >>= fun t ->
-  write_one (Cstruct.of_string str)
+let print str = write_one (Cstruct.of_string str)
       
 
 module Main
