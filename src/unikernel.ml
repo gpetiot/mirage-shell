@@ -9,7 +9,7 @@ let remove_cr str =
   else str
 
 (* write a Cstruct.t to stdout (no CR) *)
-(* to define log_no_cr *)
+(* to define print *)
 let write_one buf =
   Lwt_cstruct.complete
     (fun frag ->
