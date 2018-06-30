@@ -27,20 +27,94 @@ module Main
   (*  (FS: Mirage_types_lwt.FS)*)
   (T: Mirage_types_lwt.TIME) =
 struct
-  
+
+  let exit_shell = ref false
+
+  let execute_builtin prgm _args =
+    if prgm = "exit" then
+      begin
+	exit_shell := true;
+	Lwt.return (Unix.WEXITED 0)
+      end
+    else
+      Lwt.fail Command.Not_a_builtin
+
+  open Command
+	
+  let rec run = function
+    | Execute (prgm, args) ->
+       Lwt.catch
+	 (fun () -> execute_builtin prgm args)
+	 (function
+	 | Command.Not_a_builtin -> Lwt_process.exec (prgm, Array.of_list args)
+	 | exn ->
+	    begin
+	      Logs.err (fun f -> f "uncaught exception from listen callback@\n\
+                                    Exception: @[%s@]"
+		(Printexc.to_string exn));
+	      Lwt.return (Unix.WEXITED 0)
+	    end
+	 )
+    | Pipe (_out_stream, _cmd1, _cmd2) ->
+       (* TODO *)
+       assert false
+    | Junction (And, cmd1, cmd2) ->
+       run cmd1 >>=
+	 begin
+	   fun status1 ->
+	     match status1 with
+	     | Unix.WEXITED 0 -> run cmd2
+	     | _ -> Lwt.return status1
+	 end
+    | Junction (Or, cmd1, cmd2) ->
+       run cmd1 >>=
+	 begin
+	   fun status1 ->
+	     match status1 with
+	     | Unix.WEXITED 0 -> Lwt.return status1
+	     | _ -> run cmd2
+	 end
+    | Sequence (cmd1, Synchronous, Some cmd2) ->
+       run cmd1 >>= fun _ -> run cmd2
+    | Sequence (_, Synchronous, None) -> assert false (* not possible *)
+    | Sequence (cmd1, Asynchronous, None) ->
+       begin
+	 Lwt.async (fun () -> run cmd1);
+	 Lwt.return (Unix.WEXITED 0)
+       end
+    | Sequence (cmd1, Asynchronous, Some cmd2) ->
+       begin
+	 Lwt.async (fun () -> run cmd1);
+	 run cmd2
+       end
+    
+	
   let process_string_input console str =
+    C.log console ("processing '" ^ str ^ "'...") >>= fun () ->
     let cmd = Command.parse str in
     begin
       match cmd with
       | Ok cmd ->
-	 let str =
-	   Format.fprintf Format.str_formatter "%a" Command.pp_cmd cmd;
-	   Format.flush_str_formatter ()
-	 in
-	  C.log console str
+	 let str = Format.asprintf "%a" Command.pp_cmd cmd in
+	 C.log console str >>= fun () ->
+	 run cmd >>= fun ret ->
+	 begin
+	   let str = match ret with
+	     | Unix.WEXITED i ->
+		Format.asprintf "terminated normally and returned %i" i
+	     | Unix.WSIGNALED i ->
+		Format.asprintf "killed by signal %i" i
+	     | Unix.WSTOPPED i ->
+		Format.asprintf "stopped by signal %i" i
+	   in
+	   if !exit_shell then
+	     Lwt.return_unit
+	   else
+	     C.log console str
+	 end
       | Error msg -> C.log console msg
-    end >>= fun () ->
-    C.log console ("processing '" ^ str ^ "'...")
+    end
+
       
   let rec main_loop console =
     print "> " >>= fun () ->
@@ -51,29 +125,14 @@ struct
        if str = "" then
 	 main_loop console
        else
-	 if str = "exit" then
-	   C.disconnect console
-	 else
-	   let last_char = String.get str ((String.length str) - 1) in
-	   if last_char = '&' then
-	     (Lwt.async (fun () ->
-	       C.log console ("input: '" ^ str ^ "' -> DETACH") >>= fun () ->
-	       Lwt.catch (fun () -> process_string_input console str)
-		 (fun ex ->
-		   Logs.err (fun f -> f "uncaught exception \
-                            from listen callback \
-                            @\nException: @[%s@]"
-                   (Printexc.to_string ex));
-		   Lwt.return ()
-		 )
-	      );
-	      main_loop console)
+	 begin
+	   process_string_input console str >>= fun _ ->
+	   if !exit_shell then
+	     C.disconnect console
 	   else
-	     (C.log console ("input: '" ^ str ^ "'") >>= fun () ->
-	      process_string_input console str >>= fun () ->
-	      main_loop console)
-    | Ok (`Eof) ->
-       C.log console ("input: EOF")
+	     main_loop console
+	 end
+    | Ok (`Eof) -> Lwt.return_unit
     | Error err ->
        let str = Format.asprintf "error: %a" C.pp_error err in
        C.log console str

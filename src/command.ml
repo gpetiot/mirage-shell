@@ -17,13 +17,13 @@ type command =
   | Sequence of command * synchronous_mode * command option
 
 let pp_sep fmt () = Format.fprintf fmt " "
-let pp_arg fmt arg = Format.fprintf fmt "%s" arg
+let pp_arg fmt arg = Format.fprintf fmt "'%s'" arg
 let pp_args fmt args = Format.pp_print_list ~pp_sep pp_arg fmt args
 let pp_synchro fmt x =
   Format.fprintf fmt "%c" (if x = Synchronous then ';' else '&')
 let rec pp_cmd fmt = function
   | Execute (prg, args) ->
-     Format.fprintf fmt "Execute (%s %a)" prg pp_args args
+     Format.fprintf fmt "Execute ('%s' %a)" prg pp_args args
   | Pipe (Stdout, cmd1, cmd2) ->
      Format.fprintf fmt "Pipe (%a | %a)" pp_cmd cmd1 pp_cmd cmd2
   | Pipe (Stdout_stderr, cmd1, cmd2) ->
@@ -159,3 +159,6 @@ let rec parse_sequence str =
   | Some i, Some j -> if i < j then parse_sync i else parse_async j
      
 let parse = parse_sequence
+
+
+exception Not_a_builtin
