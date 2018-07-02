@@ -57,8 +57,38 @@ struct
 	 end
       )
 
+  let rec read_stream st =
+    Lwt_stream.get st >>= (fun v ->
+      match v with
+      | Some d -> print_endline d; read_stream st
+      | None -> Lwt.return_unit
+    )
+	
+  let on_exit fd =
+    let channel = Lwt_io.of_unix_fd ~mode:Lwt_io.input fd in
+    let stream =  Lwt_io.read_lines channel in
+    read_stream stream >>= fun () ->
+    Lwt_io.close channel
+      
   let rec run_pipe_command ?stdin ?stdout ?stderr = function
-    | No_pipe x -> run_basic_command ?stdin ?stdout ?stderr x
+    | No_pipe x ->
+       run_basic_command ?stdin ?stdout ?stderr x >>=
+	 begin
+	   fun status ->
+	     begin
+	       match stdout with
+	       | Some `Keep -> on_exit Unix.stdout
+	       | _ -> Lwt.return_unit
+	     end
+	   >>=
+	       begin
+		 fun _ ->
+		   match stderr with
+		   | Some `Keep -> on_exit Unix.stderr
+		   | _ -> Lwt.return_unit
+	       end >>=
+	       fun _ -> Lwt.return status
+	 end
     | Pipe (Stdout, cmd1, cmd2) ->
        let (stdout_r, stdout_w) = Unix.pipe () in
        run_basic_command ?stdin ~stdout:(`FD_move stdout_w) ?stderr cmd1 >>=
