@@ -42,11 +42,12 @@ struct
   open Command
 
 
-  let run_basic_command (prgm, args) =
+  let run_basic_command ?stdin ?stdout ?stderr (prgm, args) =
     Lwt.catch
       (fun () -> execute_builtin prgm args)
       (function
-      | Command.Not_a_builtin -> Lwt_process.exec (prgm, args)
+      | Command.Not_a_builtin ->
+	 Lwt_process.exec ?stdin ?stdout ?stderr (prgm, args)
       | exn ->
 	 begin
 	   Logs.err (fun f -> f "uncaught exception from listen callback@\n\
@@ -56,9 +57,23 @@ struct
 	 end
       )
 
-  let run_pipe_command = function
-    | No_pipe x -> run_basic_command x
-    | Pipe _ -> assert false (* TODO *)
+  let rec run_pipe_command ?stdin ?stdout ?stderr = function
+    | No_pipe x -> run_basic_command ?stdin ?stdout ?stderr x
+    | Pipe (Stdout, cmd1, cmd2) ->
+       let (stdout_r, stdout_w) = Unix.pipe () in
+       run_basic_command ?stdin ~stdout:(`FD_move stdout_w) ?stderr cmd1 >>=
+	 begin
+	   fun _ ->
+	     run_pipe_command ~stdin:(`FD_move stdout_r) ?stdout ?stderr cmd2
+	 end
+    | Pipe (Stdout_stderr, cmd1, cmd2) ->
+       let (stdout_r, stdout_w) = Unix.pipe () in
+       run_basic_command
+	 ?stdin ~stdout:(`FD_move stdout_w) ~stderr:(`FD_move stdout_w) cmd1 >>=
+	 begin
+	   fun _ ->
+	     run_pipe_command ~stdin:(`FD_move stdout_r) ?stdout ?stderr cmd2
+	 end
 
   let rec run_junction_command = function
     | No_junction x -> run_pipe_command x
