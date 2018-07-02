@@ -35,7 +35,7 @@ let pp_basic_command fmt (prg, args) =
   Format.fprintf fmt "Basic ('%s' %a)" prg pp_args (Array.to_list args)
 
 let rec pp_pipe_command fmt = function
-  | No_pipe x -> pp_basic_command fmt x
+  | No_pipe x -> Format.fprintf fmt "No_pipe (%a)" pp_basic_command x
   | Pipe (Stdout, cmd1, cmd2) ->
      Format.fprintf
        fmt "Pipe (%a | %a)" pp_basic_command cmd1 pp_pipe_command cmd2
@@ -44,7 +44,7 @@ let rec pp_pipe_command fmt = function
        fmt "Pipe (%a |& %a)" pp_basic_command cmd1 pp_pipe_command cmd2
 
 let rec pp_junction_command fmt = function
-  | No_junction x -> pp_pipe_command fmt x
+  | No_junction x -> Format.fprintf fmt "No_junction (%a)" pp_pipe_command x
   | Junction (And, cmd1, cmd2) ->
      Format.fprintf
        fmt "Junction (%a && %a)" pp_pipe_command cmd1 pp_junction_command cmd2
@@ -53,7 +53,7 @@ let rec pp_junction_command fmt = function
        fmt "Junction (%a || %a)" pp_pipe_command cmd1 pp_junction_command cmd2
 
 let rec pp_sequence_command fmt = function
-  | No_sequence x -> pp_junction_command fmt x
+  | No_sequence x -> Format.fprintf fmt "No_sequence (%a)" pp_junction_command x
   | Sequence (cmd1, sm, Some cmd2) ->
      Format.fprintf
        fmt "Seq (%a %a %a)" pp_junction_command cmd1 pp_synchro sm
