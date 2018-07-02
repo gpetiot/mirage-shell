@@ -8,34 +8,62 @@ type junction_op =
 type synchronous_mode =
   | Synchronous
   | Asynchronous
+
+type basic_command = Lwt_process.command
+
+type pipe_command =
+  | No_pipe of basic_command
+  | Pipe of out_stream * basic_command * pipe_command
+
+type junction_command =
+  | No_junction of pipe_command
+  | Junction of junction_op * pipe_command * junction_command
+
+type sequence_command =
+  | No_sequence of junction_command
+  | Sequence of junction_command * synchronous_mode * sequence_command option
       
-(* constructors ordered by decreasing priority *)
-type command =
-  | Execute of string * string list
-  | Pipe of out_stream * command * command
-  | Junction of junction_op * command * command
-  | Sequence of command * synchronous_mode * command option
+type command = sequence_command
 
 let pp_sep fmt () = Format.fprintf fmt " "
 let pp_arg fmt arg = Format.fprintf fmt "'%s'" arg
 let pp_args fmt args = Format.pp_print_list ~pp_sep pp_arg fmt args
 let pp_synchro fmt x =
   Format.fprintf fmt "%c" (if x = Synchronous then ';' else '&')
-let rec pp_cmd fmt = function
-  | Execute (prg, args) ->
-     Format.fprintf fmt "Execute ('%s' %a)" prg pp_args args
+
+let pp_basic_command fmt (prg, args) =
+  Format.fprintf fmt "Basic ('%s' %a)" prg pp_args (Array.to_list args)
+
+let rec pp_pipe_command fmt = function
+  | No_pipe x -> pp_basic_command fmt x
   | Pipe (Stdout, cmd1, cmd2) ->
-     Format.fprintf fmt "Pipe (%a | %a)" pp_cmd cmd1 pp_cmd cmd2
+     Format.fprintf
+       fmt "Pipe (%a | %a)" pp_basic_command cmd1 pp_pipe_command cmd2
   | Pipe (Stdout_stderr, cmd1, cmd2) ->
-     Format.fprintf fmt "Pipe (%a |& %a)" pp_cmd cmd1 pp_cmd cmd2
+     Format.fprintf
+       fmt "Pipe (%a |& %a)" pp_basic_command cmd1 pp_pipe_command cmd2
+
+let rec pp_junction_command fmt = function
+  | No_junction x -> pp_pipe_command fmt x
   | Junction (And, cmd1, cmd2) ->
-     Format.fprintf fmt "Junction (%a && %a)" pp_cmd cmd1 pp_cmd cmd2
+     Format.fprintf
+       fmt "Junction (%a && %a)" pp_pipe_command cmd1 pp_junction_command cmd2
   | Junction (Or, cmd1, cmd2) ->
-     Format.fprintf fmt "Junction (%a || %a)" pp_cmd cmd1 pp_cmd cmd2
+     Format.fprintf
+       fmt "Junction (%a || %a)" pp_pipe_command cmd1 pp_junction_command cmd2
+
+let rec pp_sequence_command fmt = function
+  | No_sequence x -> pp_junction_command fmt x
   | Sequence (cmd1, sm, Some cmd2) ->
-     Format.fprintf fmt "Seq (%a %a %a)" pp_cmd cmd1 pp_synchro sm pp_cmd cmd2
+     Format.fprintf
+       fmt "Seq (%a %a %a)" pp_junction_command cmd1 pp_synchro sm
+       pp_sequence_command cmd2
   | Sequence (cmd1, sm, None) ->
-     Format.fprintf fmt "Seq (%a %a)" pp_cmd cmd1 pp_synchro sm
+     Format.fprintf
+       fmt "Seq (%a %a)" pp_junction_command cmd1 pp_synchro sm
+     
+       
+let pp_cmd = pp_sequence_command
 
        
 (* hypothesis: str does not contain ';' '&' '|' '|&' '||' '&&' *)
@@ -45,7 +73,7 @@ let parse_execute str =
   let parts = List.filter (fun x -> x <> "") parts in
   match parts with
   | [] -> Error "empty execute_cmd"
-  | h :: t -> Ok (Execute (h, t))
+  | h :: t -> Ok (h, Array.of_list t)
 
 (* hypothesis: str does not contain ';' '&' '||' '&&' *)
 (* token separators are '|' '|&' *)
@@ -72,7 +100,10 @@ let rec parse_pipe str =
     with
       Invalid_argument _ -> Error "invalid pipe command"
   with
-    Not_found -> parse_execute str
+    Not_found ->
+      match parse_execute str with
+      | Ok cmd -> Ok (No_pipe cmd)
+      | Error x -> Error x
 
       
 let rec index_of_op str c start =
@@ -109,7 +140,12 @@ let rec parse_junction str =
      | _ -> Error "invalid AND command"
   in
   match i_and, i_or with
-  | None, None -> parse_pipe str
+  | None, None ->
+     begin
+       match parse_pipe str with
+       | Ok cmd -> Ok (No_junction cmd)
+       | Error x -> Error x
+     end
   | Some i, None -> parse_and i
   | None, Some i -> parse_or i
   | Some i, Some j -> if i < j then parse_and i else parse_or j
@@ -139,7 +175,7 @@ let rec parse_sequence str =
     let cmd2 = parse_sequence str2 in
     match cmd1, cmd2 with
     | Ok cmd1, Ok cmd2 -> Ok (Sequence (cmd1, Synchronous, Some cmd2))
-    | Ok cmd1, Error _ -> Ok cmd1
+    | Ok cmd1, Error _ -> Ok (No_sequence cmd1)
     | _ -> Error "invalid synchronous sequence command"
   in
   let parse_async i =
@@ -153,7 +189,12 @@ let rec parse_sequence str =
     | _ -> Error "invalid asynchronous sequence command"
   in
   match i_semicolon, i_and with
-  | None, None -> parse_junction str
+  | None, None ->
+     begin
+       match parse_junction str with
+       | Ok cmd -> Ok (No_sequence cmd)
+       | Error x -> Error x
+     end
   | Some i, None -> parse_sync i
   | None, Some i -> parse_async i
   | Some i, Some j -> if i < j then parse_sync i else parse_async j

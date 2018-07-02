@@ -40,54 +40,62 @@ struct
       Lwt.fail Command.Not_a_builtin
 
   open Command
-	
-  let rec run = function
-    | Execute (prgm, args) ->
-       Lwt.catch
-	 (fun () -> execute_builtin prgm args)
-	 (function
-	 | Command.Not_a_builtin -> Lwt_process.exec (prgm, Array.of_list args)
-	 | exn ->
-	    begin
-	      Logs.err (fun f -> f "uncaught exception from listen callback@\n\
+
+
+  let run_basic_command (prgm, args) =
+    Lwt.catch
+      (fun () -> execute_builtin prgm args)
+      (function
+      | Command.Not_a_builtin -> Lwt_process.exec (prgm, args)
+      | exn ->
+	 begin
+	   Logs.err (fun f -> f "uncaught exception from listen callback@\n\
                                     Exception: @[%s@]"
-		(Printexc.to_string exn));
-	      Lwt.return (Unix.WEXITED 0)
-	    end
-	 )
-    | Pipe (_out_stream, _cmd1, _cmd2) ->
-       (* TODO *)
-       assert false
+	     (Printexc.to_string exn));
+	   Lwt.return (Unix.WEXITED 0)
+	 end
+      )
+
+  let run_pipe_command = function
+    | No_pipe x -> run_basic_command x
+    | Pipe _ -> assert false (* TODO *)
+
+  let rec run_junction_command = function
+    | No_junction x -> run_pipe_command x
     | Junction (And, cmd1, cmd2) ->
-       run cmd1 >>=
+       run_pipe_command cmd1 >>=
 	 begin
 	   fun status1 ->
 	     match status1 with
-	     | Unix.WEXITED 0 -> run cmd2
+	     | Unix.WEXITED 0 -> run_junction_command cmd2
 	     | _ -> Lwt.return status1
 	 end
     | Junction (Or, cmd1, cmd2) ->
-       run cmd1 >>=
+       run_pipe_command cmd1 >>=
 	 begin
 	   fun status1 ->
 	     match status1 with
 	     | Unix.WEXITED 0 -> Lwt.return status1
-	     | _ -> run cmd2
+	     | _ -> run_junction_command cmd2
 	 end
+
+  let rec run_sequence_command = function
+    | No_sequence x -> run_junction_command x
     | Sequence (cmd1, Synchronous, Some cmd2) ->
-       run cmd1 >>= fun _ -> run cmd2
+       run_junction_command cmd1 >>= fun _ -> run_sequence_command cmd2
     | Sequence (_, Synchronous, None) -> assert false (* not possible *)
     | Sequence (cmd1, Asynchronous, None) ->
        begin
-	 Lwt.async (fun () -> run cmd1);
+	 Lwt.async (fun () -> run_junction_command cmd1);
 	 Lwt.return (Unix.WEXITED 0)
        end
     | Sequence (cmd1, Asynchronous, Some cmd2) ->
        begin
-	 Lwt.async (fun () -> run cmd1);
-	 run cmd2
+	 Lwt.async (fun () -> run_junction_command cmd1);
+	 run_sequence_command cmd2
        end
-    
+
+  let run = run_sequence_command
 	
   let process_string_input console str =
     C.log console ("processing '" ^ str ^ "'...") >>= fun () ->
