@@ -41,13 +41,59 @@ struct
 
   open Command
 
-
+  let rec read_stream st =
+    Lwt_stream.get st >>= (function
+    | Some str ->
+       print (Format.asprintf "%s@\n" str) >>= fun () -> read_stream st
+    | None -> Lwt.return_unit)
+	
+  let on_exit fd =
+    let channel = Lwt_io.of_unix_fd ~mode:Lwt_io.input fd in
+    let stream =  Lwt_io.read_lines channel in
+    read_stream stream >>= fun () ->
+    Lwt_io.close channel
+      
   let run_basic_command ?stdin ?stdout ?stderr (prgm, args) =
     Lwt.catch
       (fun () -> execute_builtin prgm args)
       (function
       | Command.Not_a_builtin ->
-	 Lwt_process.exec ?stdin ?stdout ?stderr (prgm, args)
+	 begin
+	   match stdout, stderr with
+	   | Some `Keep, Some `Keep  ->
+	      let (stdout_r, stdout_w) = Unix.pipe () in
+	      let (stderr_r, stderr_w) = Unix.pipe () in
+	      let cmd = Lwt_process.open_process_none
+		?stdin ~stdout:(`FD_move stdout_w) ~stderr:(`FD_move stderr_w)
+		(prgm, args) in
+	      let st = Lwt_main.run cmd#status in
+	      on_exit stdout_r >>= fun () ->
+	      on_exit stderr_r >>= fun () ->
+	      Lwt.return st
+
+	   | Some `Keep, _  ->
+	      let (stdout_r, stdout_w) = Unix.pipe () in
+	      let cmd = Lwt_process.open_process_none
+		?stdin ~stdout:(`FD_move stdout_w) ?stderr (prgm, args) in
+	      let st = Lwt_main.run cmd#status in
+	      on_exit stdout_r >>= fun () ->
+	      Lwt.return st
+		
+	   | _, Some `Keep  ->
+	      let (stderr_r, stderr_w) = Unix.pipe () in
+	      let cmd = Lwt_process.open_process_none
+		?stdin ?stdout ~stderr:(`FD_move stderr_w) (prgm, args) in
+	      let st = Lwt_main.run cmd#status in
+	      on_exit stderr_r >>= fun () ->
+	      Lwt.return st
+		
+	   | _ ->
+	     let cmd =
+	       Lwt_process.open_process_none ?stdin ?stdout ?stderr (prgm, args)
+	     in
+	     let st = Lwt_main.run cmd#status in
+	      Lwt.return st
+	 end
       | exn ->
 	 begin
 	   Logs.err (fun f -> f "uncaught exception from listen callback@\n\
@@ -57,38 +103,9 @@ struct
 	 end
       )
 
-  let rec read_stream st =
-    Lwt_stream.get st >>= (fun v ->
-      match v with
-      | Some d -> print_endline d; read_stream st
-      | None -> Lwt.return_unit
-    )
-	
-  let on_exit fd =
-    let channel = Lwt_io.of_unix_fd ~mode:Lwt_io.input fd in
-    let stream =  Lwt_io.read_lines channel in
-    read_stream stream >>= fun () ->
-    Lwt_io.close channel
       
   let rec run_pipe_command ?stdin ?stdout ?stderr = function
-    | No_pipe x ->
-       run_basic_command ?stdin ?stdout ?stderr x >>=
-	 begin
-	   fun status ->
-	     begin
-	       match stdout with
-	       | Some `Keep -> on_exit Unix.stdout
-	       | _ -> Lwt.return_unit
-	     end
-	   >>=
-	       begin
-		 fun _ ->
-		   match stderr with
-		   | Some `Keep -> on_exit Unix.stderr
-		   | _ -> Lwt.return_unit
-	       end >>=
-	       fun _ -> Lwt.return status
-	 end
+    | No_pipe x -> run_basic_command ?stdin ?stdout ?stderr x
     | Pipe (Stdout, cmd1, cmd2) ->
        let (stdout_r, stdout_w) = Unix.pipe () in
        run_basic_command ?stdin ~stdout:(`FD_move stdout_w) ?stderr cmd1 >>=
@@ -99,16 +116,17 @@ struct
     | Pipe (Stdout_stderr, cmd1, cmd2) ->
        let (stdout_r, stdout_w) = Unix.pipe () in
        run_basic_command
-	 ?stdin ~stdout:(`FD_move stdout_w) ~stderr:(`FD_move stdout_w) cmd1 >>=
+	 ?stdin ~stdout:(`FD_copy stdout_w) ~stderr:(`FD_move stdout_w) cmd1 >>=
 	 begin
 	   fun _ ->
 	     run_pipe_command ~stdin:(`FD_move stdout_r) ?stdout ?stderr cmd2
 	 end
 
   let rec run_junction_command = function
-    | No_junction x -> run_pipe_command x
+    | No_junction x ->
+       run_pipe_command ~stdin:`Keep ~stdout:`Keep ~stderr:`Keep x
     | Junction (And, cmd1, cmd2) ->
-       run_pipe_command cmd1 >>=
+       run_pipe_command ~stdin:`Keep ~stdout:`Keep ~stderr:`Keep cmd1 >>=
 	 begin
 	   fun status1 ->
 	     match status1 with
@@ -116,7 +134,7 @@ struct
 	     | _ -> Lwt.return status1
 	 end
     | Junction (Or, cmd1, cmd2) ->
-       run_pipe_command cmd1 >>=
+       run_pipe_command ~stdin:`Keep ~stdout:`Keep ~stderr:`Keep cmd1 >>=
 	 begin
 	   fun status1 ->
 	     match status1 with
