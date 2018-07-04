@@ -73,7 +73,7 @@ let parse_execute str =
   let parts = List.filter (fun x -> x <> "") parts in
   match parts with
   | [] -> Error "empty execute_cmd"
-  | h :: t -> Ok (h, Array.of_list t)
+  | h :: t -> Ok (h, Array.of_list (h :: t))
 
 (* hypothesis: str does not contain ';' '&' '||' '&&' *)
 (* token separators are '|' '|&' *)
