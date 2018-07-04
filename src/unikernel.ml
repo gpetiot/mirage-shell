@@ -161,27 +161,23 @@ struct
   let run = run_sequence_command
 	
   let process_string_input console str =
-    C.log console ("processing '" ^ str ^ "'...") >>= fun () ->
     let cmd = Command.parse str in
     begin
       match cmd with
       | Ok cmd ->
-	 let str = Format.asprintf "%a" Command.pp_cmd cmd in
-	 C.log console str >>= fun () ->
+	 Logs.info (fun f -> f "processing %a" Command.pp_cmd cmd);
 	 run cmd >>= fun ret ->
 	 begin
-	   let str = match ret with
+	   let pp fmt = function
 	     | Unix.WEXITED i ->
-		Format.asprintf "terminated normally and returned %i" i
+		Format.fprintf fmt "terminated normally and returned %i" i
 	     | Unix.WSIGNALED i ->
-		Format.asprintf "killed by signal %i" i
+		Format.fprintf fmt "killed by signal %i" i
 	     | Unix.WSTOPPED i ->
-		Format.asprintf "stopped by signal %i" i
+		Format.fprintf fmt "stopped by signal %i" i
 	   in
-	   if !exit_shell then
-	     Lwt.return_unit
-	   else
-	     C.log console str
+	   Logs.info (fun f -> f "%a" pp ret);
+	   Lwt.return_unit
 	 end
       | Error msg -> C.log console msg
     end
