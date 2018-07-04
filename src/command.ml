@@ -156,7 +156,8 @@ let rec index_of_sep str start =
   try
     let i = String.index_from str start '&' in
     try
-      if String.get str (i+1) = '&' then index_of_sep str (i+2)
+      if String.get str (i-1) = '|' || String.get str (i+1) = '&' then
+	index_of_sep str (i+2)
       else Some i
     with Invalid_argument _ -> Some i
   with Not_found -> None
