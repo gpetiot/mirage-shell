@@ -23,7 +23,7 @@ type sequence_command =
   | No_sequence of junction_command
   | Sequence of junction_command * synchronous_mode * sequence_command option
       
-type command = sequence_command
+type t = sequence_command
 
 let pp_sep fmt () = Format.fprintf fmt " "
 let pp_arg fmt arg = Format.fprintf fmt "'%s'" arg
@@ -63,7 +63,7 @@ let rec pp_sequence_command fmt = function
        fmt "Seq (%a %a)" pp_junction_command cmd1 pp_synchro sm
      
        
-let pp_cmd = pp_sequence_command
+let pp = pp_sequence_command
 
        
 (* hypothesis: str does not contain ';' '&' '|' '|&' '||' '&&' *)
@@ -72,7 +72,7 @@ let parse_execute str =
   let parts = String.split_on_char ' ' str in
   let parts = List.filter (fun x -> x <> "") parts in
   match parts with
-  | [] -> Error "empty execute_cmd"
+  | [] -> Error (Failure "empty execute_cmd")
   | h :: t -> Ok (h, Array.of_list (h :: t))
 
 (* hypothesis: str does not contain ';' '&' '||' '&&' *)
@@ -88,7 +88,7 @@ let rec parse_pipe str =
 	let cmd2 = parse_pipe str2 in
 	match cmd1, cmd2 with
 	| Ok cmd1, Ok cmd2 -> Ok (Pipe (Stdout_stderr, cmd1, cmd2))
-	| _ -> Error "invalid pipe command"
+	| _ -> Error (Failure "invalid pipe command")
       else
 	let str1 = String.sub str 0 i in
 	let str2 = String.sub str (i+1) ((String.length str) - i - 1) in
@@ -96,9 +96,9 @@ let rec parse_pipe str =
 	let cmd2 = parse_pipe str2 in
 	match cmd1, cmd2 with
 	| Ok cmd1, Ok cmd2 -> Ok (Pipe (Stdout, cmd1, cmd2))
-	| _ -> Error "invalid pipe command"
+	| _ -> Error (Failure "invalid pipe command")
     with
-      Invalid_argument _ -> Error "invalid pipe command"
+      Invalid_argument _ -> Error (Failure "invalid pipe command")
   with
     Not_found ->
       match parse_execute str with
@@ -128,7 +128,7 @@ let rec parse_junction str =
      let cmd2 = parse_junction str2 in
      match cmd1, cmd2 with
      | Ok cmd1, Ok cmd2 -> Ok (Junction (Or, cmd1, cmd2))
-     | _ -> Error "invalid OR command"
+     | _ -> Error (Failure "invalid OR command")
   in
   let parse_and i =
      let str1 = String.sub str 0 i in
@@ -137,7 +137,7 @@ let rec parse_junction str =
      let cmd2 = parse_junction str2 in
      match cmd1, cmd2 with
      | Ok cmd1, Ok cmd2 -> Ok (Junction (And, cmd1, cmd2))
-     | _ -> Error "invalid AND command"
+     | _ -> Error (Failure "invalid AND command")
   in
   match i_and, i_or with
   | None, None ->
@@ -177,7 +177,7 @@ let rec parse_sequence str =
     match cmd1, cmd2 with
     | Ok cmd1, Ok cmd2 -> Ok (Sequence (cmd1, Synchronous, Some cmd2))
     | Ok cmd1, Error _ -> Ok (No_sequence cmd1)
-    | _ -> Error "invalid synchronous sequence command"
+    | _ -> Error (Failure "invalid synchronous sequence command")
   in
   let parse_async i =
     let str1 = String.sub str 0 i in
@@ -187,7 +187,7 @@ let rec parse_sequence str =
     match cmd1, cmd2 with
     | Ok cmd1, Ok cmd2 -> Ok (Sequence (cmd1, Asynchronous, Some cmd2))
     | Ok cmd1, Error _ -> Ok (Sequence (cmd1, Asynchronous, None))
-    | _ -> Error "invalid asynchronous sequence command"
+    | _ -> Error (Failure "invalid asynchronous sequence command")
   in
   match i_semicolon, i_and with
   | None, None ->
@@ -205,12 +205,12 @@ let parse = parse_sequence
 
 exception Not_a_builtin
 
-let exit_shell = ref false
+let r_exit_shell = ref false
 
 let execute_builtin prgm _args =
   if prgm = "exit" then
     begin
-      exit_shell := true;
+      r_exit_shell := true;
       Lwt.return (Unix.WEXITED 0)
     end
   else
@@ -336,3 +336,5 @@ let rec run_sequence_command = function
      end
 
 let run = run_sequence_command
+
+let exit_shell () = !r_exit_shell

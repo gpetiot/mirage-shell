@@ -13,7 +13,7 @@ struct
     begin
       match cmd with
       | Ok cmd ->
-	 Logs.info (fun f -> f "processing %a" Command.pp_cmd cmd);
+	 Logs.info (fun f -> f "processing %a" Command.pp cmd);
 	 Command.run cmd >>= fun ret ->
 	 begin
 	   let pp fmt = function
@@ -27,7 +27,9 @@ struct
 	   Logs.info (fun f -> f "%a" pp ret);
 	   Lwt.return_unit
 	 end
-      | Error msg -> C.log console msg
+      | Error err ->
+	 let str = Format.asprintf "error: %s" (Printexc.to_string err) in
+	 C.log console str
     end
 
       
@@ -42,7 +44,7 @@ struct
        else
 	 begin
 	   process_string_input console str >>= fun _ ->
-	   if !Command.exit_shell then
+	   if Command.exit_shell () then
 	     C.disconnect console
 	   else
 	     main_loop console
