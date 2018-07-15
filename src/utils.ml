@@ -14,6 +14,4 @@ let write_one buf =
       Lwt_bytes.write Lwt_unix.stdout frag.buffer frag.off frag.len
     ) buf
 
-(* write a string to stdout (no CR) *)
-(* this could be in mirage_console *)
 let print str = write_one (Cstruct.of_string str)
