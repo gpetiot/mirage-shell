@@ -204,3 +204,135 @@ let parse = parse_sequence
 
 
 exception Not_a_builtin
+
+let exit_shell = ref false
+
+let execute_builtin prgm _args =
+  if prgm = "exit" then
+    begin
+      exit_shell := true;
+      Lwt.return (Unix.WEXITED 0)
+    end
+  else
+    Lwt.fail Not_a_builtin
+
+open Lwt.Infix
+
+let rec read_stream st =
+  Lwt_stream.get st >>= (function
+  | Some str ->
+     Utils.print (Format.asprintf "%s@\n" str) >>= fun () -> read_stream st
+  | None -> Lwt.return_unit)
+    
+let on_exit fd =
+  let channel = Lwt_io.of_unix_fd ~mode:Lwt_io.input fd in
+  let stream =  Lwt_io.read_lines channel in
+  read_stream stream >>= fun () ->
+  Lwt_io.close channel
+    
+let run_basic_command ?stdin ?stdout ?stderr (prgm, args) =
+  Lwt.catch
+    (fun () -> execute_builtin prgm args)
+    (function
+    | Not_a_builtin ->
+       begin
+	 match stdout, stderr with
+	 | Some `Keep, Some `Keep  ->
+	    let (stdout_r, stdout_w) = Unix.pipe () in
+	    let (stderr_r, stderr_w) = Unix.pipe () in
+	    let cmd = Lwt_process.open_process_none
+	      ?stdin ~stdout:(`FD_move stdout_w) ~stderr:(`FD_move stderr_w)
+	      (prgm, args) in
+	    let st = Lwt_main.run cmd#status in
+	    on_exit stdout_r >>= fun () ->
+	    on_exit stderr_r >>= fun () ->
+	    Lwt.return st
+
+	 | Some `Keep, _  ->
+	    let (stdout_r, stdout_w) = Unix.pipe () in
+	    let cmd = Lwt_process.open_process_none
+	      ?stdin ~stdout:(`FD_move stdout_w) ?stderr (prgm, args) in
+	    let st = Lwt_main.run cmd#status in
+	    on_exit stdout_r >>= fun () ->
+	    Lwt.return st
+	      
+	 | _, Some `Keep  ->
+	    let (stderr_r, stderr_w) = Unix.pipe () in
+	    let cmd = Lwt_process.open_process_none
+	      ?stdin ?stdout ~stderr:(`FD_move stderr_w) (prgm, args) in
+	    let st = Lwt_main.run cmd#status in
+	    on_exit stderr_r >>= fun () ->
+	    Lwt.return st
+	      
+	 | _ ->
+	    let cmd =
+	      Lwt_process.open_process_none ?stdin ?stdout ?stderr (prgm, args)
+	    in
+	    let st = Lwt_main.run cmd#status in
+	    Lwt.return st
+       end
+    | exn ->
+       begin
+	 Logs.err (fun f -> f "uncaught exception from listen callback@\n\
+                                    Exception: @[%s@]"
+	   (Printexc.to_string exn));
+	 Lwt.return (Unix.WEXITED 0)
+       end
+    )
+
+    
+let rec run_pipe_command ?stdin ?stdout ?stderr = function
+  | No_pipe x -> run_basic_command ?stdin ?stdout ?stderr x
+  | Pipe (Stdout, cmd1, cmd2) ->
+     let (stdout_r, stdout_w) = Unix.pipe () in
+     run_basic_command ?stdin ~stdout:(`FD_move stdout_w) ?stderr cmd1 >>=
+       begin
+	 fun _ ->
+	   run_pipe_command ~stdin:(`FD_move stdout_r) ?stdout ?stderr cmd2
+       end
+  | Pipe (Stdout_stderr, cmd1, cmd2) ->
+     let (stdout_r, stdout_w) = Unix.pipe () in
+     run_basic_command
+       ?stdin ~stdout:(`FD_copy stdout_w) ~stderr:(`FD_move stdout_w) cmd1 >>=
+       begin
+	 fun _ ->
+	   run_pipe_command ~stdin:(`FD_move stdout_r) ?stdout ?stderr cmd2
+       end
+
+let rec run_junction_command = function
+  | No_junction x ->
+     run_pipe_command ~stdin:`Keep ~stdout:`Keep ~stderr:`Keep x
+  | Junction (And, cmd1, cmd2) ->
+     run_pipe_command ~stdin:`Keep ~stdout:`Keep ~stderr:`Keep cmd1 >>=
+       begin
+	 fun status1 ->
+	   match status1 with
+	   | Unix.WEXITED 0 -> run_junction_command cmd2
+	   | _ -> Lwt.return status1
+       end
+  | Junction (Or, cmd1, cmd2) ->
+     run_pipe_command ~stdin:`Keep ~stdout:`Keep ~stderr:`Keep cmd1 >>=
+       begin
+	 fun status1 ->
+	   match status1 with
+	   | Unix.WEXITED 0 -> Lwt.return status1
+	   | _ -> run_junction_command cmd2
+       end
+
+let rec run_sequence_command = function
+  | No_sequence x -> run_junction_command x
+  | Sequence (cmd1, Synchronous, Some cmd2) ->
+     run_junction_command cmd1 >>= fun _ -> run_sequence_command cmd2
+  | Sequence (_, Synchronous, None) -> assert false (* not possible *)
+  | Sequence (cmd1, Asynchronous, None) ->
+     begin
+       Lwt.async (fun () -> run_junction_command cmd1);
+       Lwt.return (Unix.WEXITED 0)
+     end
+  | Sequence (cmd1, Asynchronous, Some cmd2) ->
+     begin
+       Lwt.async (fun () -> run_junction_command cmd1);
+       run_sequence_command cmd2
+     end
+
+let run = run_sequence_command
